@@ -1,0 +1,67 @@
+name: Build Lobo APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find project (unzip if needed)
+        shell: bash
+        run: |
+          if [ ! -f Lobo/settings.gradle.kts ]; then
+            Z=""
+            if [ -f Lobo.zip ]; then Z="Lobo.zip"; else Z="$(ls -t ./*.zip 2>/dev/null | head -n1 || true)"; fi
+            if [ -z "$Z" ]; then
+              echo "::error::No Lobo/ folder and no .zip in the repo root"
+              ls -la
+              exit 1
+            fi
+            echo "Unzipping $Z"
+            unzip -q -o "$Z"
+          fi
+          if [ ! -f Lobo/settings.gradle.kts ]; then
+            echo "::error::Lobo/settings.gradle.kts not found"
+            find . -maxdepth 3 -name settings.gradle.kts
+            exit 1
+          fi
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build debug APK
+        working-directory: Lobo
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --console=plain 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+
+      - name: Show compile errors
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '### Build errors'
+            echo '```'
+            if [ -f build.log ]; then
+              grep -E '^e: |error:|What went wrong' -A4 build.log | head -120 || true
+            else
+              echo 'No build.log (failed before Gradle ran). Check the "Find project" step.'
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Lobo-debug-apk
+          path: Lobo/app/build/outputs/apk/debug/*.apk

@@ -10,6 +10,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Kalau project di-upload sebagai .zip (GitHub tidak mengekstraknya), ekstrak dulu di sini.
       - name: Find project (unzip if needed)
         shell: bash
         run: |
@@ -46,22 +47,27 @@ jobs:
           set -o pipefail
           gradle assembleDebug --no-daemon --console=plain 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
+      # Kalau gagal, tampilkan error kompilasi langsung di halaman Summary
+      # Kalau gagal: tulis error kompilasi sebagai annotation (kelihatan di halaman run) + di Summary
       - name: Show compile errors
         if: failure()
         shell: bash
         run: |
-          {
-            echo '### Build errors'
-            echo '```'
-            if [ -f build.log ]; then
+          if [ -f build.log ]; then
+            grep -E '^e: ' build.log | head -12 | sed -E 's#^e: file://##; s#.*/Lobo/app/src/main/##; s#^#::error::#' || true
+            grep -A4 'What went wrong' build.log | head -8 | sed 's#^#::error::#' || true
+            {
+              echo '### Build errors'
+              echo '```'
               grep -E '^e: |error:|What went wrong' -A4 build.log | head -120 || true
-            else
-              echo 'No build.log (failed before Gradle ran). Check the "Find project" step.'
-            fi
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::No build.log (failed before Gradle ran)"
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: Lobo-debug-apk
           path: Lobo/app/build/outputs/apk/debug/*.apk
+          

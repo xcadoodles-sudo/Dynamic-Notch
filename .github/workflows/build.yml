@@ -10,13 +10,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Kalau project di-upload sebagai .zip (GitHub tidak mengekstraknya), ekstrak dulu di sini.
       - name: Find project (unzip if needed)
         shell: bash
         run: |
-          if [ ! -f Lobo/settings.gradle.kts ]; then
-            Z=""
-            if [ -f Lobo.zip ]; then Z="Lobo.zip"; else Z="$(ls -t ./*.zip 2>/dev/null | head -n1 || true)"; fi
+          if [ -f Lobo.zip ]; then
+            echo "Unzipping Lobo.zip (menggantikan folder Lobo/ di repo)"
+            rm -rf Lobo
+            unzip -q -o Lobo.zip
+          elif [ ! -f Lobo/settings.gradle.kts ]; then
+            Z="$(ls -t ./*.zip 2>/dev/null | head -n1 || true)"
             if [ -z "$Z" ]; then
               echo "::error::No Lobo/ folder and no .zip in the repo root"
               ls -la
@@ -30,6 +32,21 @@ jobs:
             find . -maxdepth 3 -name settings.gradle.kts
             exit 1
           fi
+          rm -f Lobo/app/lobo-release-key.jks
+
+      - name: Restore signing key
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.LOBO_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.LOBO_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > Lobo/app/lobo-release-key.jks
+            echo "Keystore: dari secret"
+            keytool -list -v -keystore Lobo/app/lobo-release-key.jks -storepass "$KS_PASS" | grep -E 'SHA256:' || true
+          else
+            echo "::warning::Secret LOBO_KEYSTORE_B64 / LOBO_KEYSTORE_PASSWORD belum diisi. APK akan memakai kunci debug (bukan build resmi)."
+          fi
 
       - uses: actions/setup-java@v5
         with:
@@ -40,15 +57,28 @@ jobs:
         with:
           gradle-version: 8.9
 
-      - name: Build debug APK
+      - name: Build release APK
         working-directory: Lobo
         shell: bash
+        env:
+          LOBO_KEYSTORE_PASSWORD: ${{ secrets.LOBO_KEYSTORE_PASSWORD }}
         run: |
           set -o pipefail
-          gradle assembleDebug --no-daemon --console=plain 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
+          gradle assembleRelease --no-daemon --console=plain 2>&1 | tee "$GITHUB_WORKSPACE/build.log"
 
-      # Kalau gagal, tampilkan error kompilasi langsung di halaman Summary
-      # Kalau gagal: tulis error kompilasi sebagai annotation (kelihatan di halaman run) + di Summary
+      - name: Show APK signature
+        continue-on-error: true
+        shell: bash
+        run: |
+          APK=$(ls Lobo/app/build/outputs/apk/release/*.apk | head -n1)
+          AS=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
+          {
+            echo '### APK signature'
+            echo '```'
+            "$AS" verify --print-certs "$APK" | grep -E 'SHA-256|Signer' || true
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Show compile errors
         if: failure()
         shell: bash
@@ -68,6 +98,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Lobo-debug-apk
-          path: Lobo/app/build/outputs/apk/debug/*.apk
-          
+          name: Lobo-release-apk
+          path: Lobo/app/build/outputs/apk/release/*.apk
